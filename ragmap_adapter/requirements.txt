@@ -30,3 +30,5 @@ setuptools==69.5.1
 wheel
 packaging
 einops
+# zoneinfo database: upstream's timestamp overlay uses America/Toronto.
+tzdata
