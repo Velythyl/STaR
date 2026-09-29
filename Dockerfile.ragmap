@@ -72,7 +72,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONPATH=/opt/STaR
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates libgl1 libegl1 libgomp1 libglib2.0-0 \
+        ca-certificates libgl1 libegl1 libgomp1 libglib2.0-0 libusb-1.0-0 \
         libx11-6 libxext6 libxrender1 libsm6 libxt6 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /opt/python /opt/python
