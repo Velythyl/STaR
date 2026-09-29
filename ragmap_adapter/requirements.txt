@@ -1,0 +1,31 @@
+# The subset of upstream's pyproject.toml (docker/pyproject.bootstrap.toml) that
+# the RGB-D scene-graph constructor imports, at upstream's pins where it pins.
+# torch/torchvision (2.7.1 / 0.22.1, cu128) are installed first and constrained.
+numpy==1.26.4
+faiss-cpu
+openai
+hydra-core
+scipy
+thinc>=8.2.0,<8.3.0
+spacy>=3.7.0,<3.8.0
+open3d>=0.19.0
+transformers[sentencepiece]==4.46.3
+fairscale==0.4.4
+timm>=1.0.17
+Pillow
+opencv-python>=4.10.0.84,<4.12
+addict
+yapf
+supervision>=0.22.0
+pycocotools
+pycocoevalcap
+termcolor
+scikit-learn
+matplotlib
+sentence-transformers
+psutil
+tqdm
+ninja
+setuptools==69.5.1
+wheel
+packaging

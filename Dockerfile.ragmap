@@ -1,0 +1,95 @@
+# STaR (TRAILab/STaR) 3-D primitive builder + RAGMAP adapter, as an
+# "object_mapping" container. Upstream's own images (docker/) are ROS 2 Humble
+# desktop + VILA + the LiDAR driver; this one carries only what the RGB-D
+# scene-graph constructor imports: Tag2Text (recognize-anything),
+# GroundingDINO (at upstream's pinned commit), TAP (tokenize-anything), SBERT.
+# Python 3.10, torch 2.7.1 cu128, as upstream. No ROS, no VILA (captions are
+# RAGMAP's own stage). Weights are NOT baked in: mount them at /weights
+# (see ragmap_adapter/README.md).
+ARG CUDA_VERSION=12.8.1
+
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu22.04 AS build
+ARG UV_VERSION=0.9.18
+ENV DEBIAN_FRONTEND=noninteractive \
+    UV_PYTHON_INSTALL_DIR=/opt/python \
+    VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:/root/.local/bin:$PATH \
+    TORCH_CUDA_ARCH_LIST="8.0 8.6 8.9 9.0+PTX" \
+    FORCE_CUDA=1 \
+    MAX_JOBS=4 \
+    CUDA_HOME=/usr/local/cuda
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git unzip wget build-essential \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --fail --location --silent --show-error https://astral.sh/uv/${UV_VERSION}/install.sh | sh \
+    && uv python install 3.10 \
+    && uv venv --seed --python 3.10 ${VIRTUAL_ENV}
+COPY ragmap_adapter/requirements.txt /tmp/star-requirements.txt
+RUN uv pip install --python ${VIRTUAL_ENV}/bin/python \
+        --index-url https://download.pytorch.org/whl/cu128 \
+        --extra-index-url https://pypi.org/simple \
+        --index-strategy unsafe-best-match \
+        torch==2.7.1 torchvision==0.22.1 \
+    && printf 'torch==2.7.1\ntorchvision==0.22.1\nnumpy==1.26.4\n' > /tmp/constraints.txt \
+    && uv pip install --python ${VIRTUAL_ENV}/bin/python -c /tmp/constraints.txt -r /tmp/star-requirements.txt \
+    && uv pip install --python ${VIRTUAL_ENV}/bin/python -c /tmp/constraints.txt --no-build-isolation \
+        "clip @ git+https://github.com/openai/CLIP.git@dcba3cb2e2827b402d2701e7e1c7d9fed8a20ef1" \
+    && uv cache clean
+# Third parties as upstream's docker/Dockerfile.star_uv installs them, at the
+# commits current when this adapter was written (upstream clones HEAD; the
+# GroundingDINO commit is upstream's own pin).
+WORKDIR /opt/third_parties
+RUN git clone https://github.com/xinyu1205/recognize-anything.git \
+    && git -C recognize-anything checkout 7cb804a8609e9f4b1a50b7f31436d2df40bb9481 \
+    && uv pip install --python ${VIRTUAL_ENV}/bin/python --no-deps --no-build-isolation -e recognize-anything \
+    && git clone https://github.com/baaivision/tokenize-anything.git \
+    && git -C tokenize-anything checkout 9cefd56ab79438b8087e79cd1ca54efa0b9c27a8 \
+    && uv pip install --python ${VIRTUAL_ENV}/bin/python --no-deps --no-build-isolation -e tokenize-anything \
+    && echo '__version__ = "0.0.0"' > tokenize-anything/tokenize_anything/version.py \
+    && wget -q https://github.com/IDEA-Research/GroundingDINO/archive/34ef00dcdf5cadb84c21b59db4fc42a4d4c75047.zip \
+    && unzip -q 34ef00dcdf5cadb84c21b59db4fc42a4d4c75047.zip \
+    && mv GroundingDINO-34ef00dcdf5cadb84c21b59db4fc42a4d4c75047 GroundingDINO \
+    && rm 34ef00dcdf5cadb84c21b59db4fc42a4d4c75047.zip \
+    && cd GroundingDINO \
+    && uv pip install --python ${VIRTUAL_ENV}/bin/python --no-deps --no-build-isolation . \
+    && rm -rf build \
+    && uv cache clean
+
+FROM nvidia/cuda:${CUDA_VERSION}-base-ubuntu22.04
+ARG STAR_GIT_SHA=unknown
+ENV DEBIAN_FRONTEND=noninteractive \
+    VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:$PATH \
+    STAR_ROOT=/opt/STaR \
+    STAR_WEIGHTS=/weights \
+    STAR_GD_CONFIG=/opt/third_parties/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py \
+    STAR_GIT_SHA=${STAR_GIT_SHA} \
+    HF_HOME=/weights/hf \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    MPLBACKEND=Agg \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/opt/STaR
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates libgl1 libegl1 libgomp1 libglib2.0-0 \
+        libx11-6 libxext6 libxrender1 libsm6 libxt6 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /opt/python /opt/python
+COPY --from=build /opt/venv /opt/venv
+COPY --from=build /opt/third_parties /opt/third_parties
+COPY . /opt/STaR
+RUN printf '#!/bin/sh\nexec /opt/venv/bin/python -m ragmap_adapter.run "$@"\n' > /usr/local/bin/ragmap-run \
+    && chmod +x /usr/local/bin/ragmap-run \
+    && python -c "import sys; sys.path.insert(0, '/opt/STaR/src'); \
+import torch, open3d, faiss, spacy, supervision, sentence_transformers; \
+import groundingdino._C; from ram.models import tag2text; from tokenize_anything import model_registry; \
+import star.scenegraph.scenegraph_constructor_depth as sgd; from star.utils.util import JitterBuffer; \
+from ragmap_adapter.run import main; \
+assert torch.version.cuda.startswith('12.8'), torch.version.cuda; print('imports ok', torch.__version__)" \
+    && ragmap-run --help >/dev/null
+
+VOLUME ["/weights"]
+WORKDIR /work
+ENTRYPOINT ["ragmap-run"]
+CMD ["--help"]
